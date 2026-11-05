@@ -14,6 +14,7 @@ export type TraceState = {
   status: "idle" | "running" | "stopped" | "failed";
   host: string | null;
   address: string | null;
+  startedAt: number | null;
   steps: FlowStep[];
   hops: Hop[];
   routeDone: boolean;
@@ -24,6 +25,7 @@ export const emptyTrace: TraceState = {
   status: "idle",
   host: null,
   address: null,
+  startedAt: null,
   steps: [],
   hops: [],
   routeDone: false,
@@ -117,17 +119,31 @@ export function readVerdict(state: TraceState): Verdict | null {
   while (first > 0 && lossOf(measured[first - 1]) >= 1) first--;
   const start = measured[first];
   const local = start.owner?.kind === "private";
+  // Loss that appears only at the destination is the site's own doing; neither the home network nor the provider can fix it.
+  if (start.n === destination.n) {
+    return {
+      tone: "warn",
+      title: `${host} drops ${end.toFixed(1)}% of tests`,
+      detail: `Every network on the way is clean, so the loss happens at ${host} itself${destination.owner ? ` (${shortName(destination.owner.name)})` : ""}. Servers often limit test replies on purpose. If the site opens normally, no action is needed.`,
+      startsAt: start.n,
+    };
+  }
   return {
     tone: end >= 3 ? "bad" : "warn",
     title: `${end.toFixed(1)}% packet loss on the way to ${host}`,
     detail: local
       ? "The loss begins inside your home network. Check your cable, Wi-Fi and router first."
-      : `The loss begins at ${nameOf(start)}. Your computer and router are not the cause, so contact your internet provider.`,
+      : `The loss begins at ${nameOf(start)} and continues to the site. Your computer and router are not the cause, so contact your internet provider.`,
     startsAt: start.n,
   };
 }
 
-export type BoxStatus = "waiting" | "good" | "problem" | "affected";
+/**
+ * waiting: not enough tests yet. good: answers cleanly. quiet: drops some tests but the loss does not continue,
+ * so it is rate limiting rather than a fault. problem: the loss starts here. affected: downstream of the problem.
+ * silent: never answered a single test.
+ */
+export type BoxStatus = "waiting" | "good" | "quiet" | "problem" | "affected" | "silent";
 export type BoxKind = "home" | "provider" | "network" | "site";
 
 export type Box = {
@@ -199,7 +215,8 @@ export function buildBoxes(state: TraceState, verdict: Verdict | null): Box[] {
       box.status = "problem";
       troubled = true;
     } else if (troubled) box.status = "affected";
-    else if (box.sent >= 5) box.status = "good";
+    else if (box.sent >= 5) box.status = box.lost / box.sent >= 0.01 ? "quiet" : "good";
+    else if (state.routeDone && !box.hops.some((h) => h.ip)) box.status = "silent";
   }
   // A network can appear twice on one route, so keys need the position too.
   return boxes.map((box, i) => ({ ...box, key: `${box.key}-${i}` }));

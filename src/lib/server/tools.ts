@@ -19,14 +19,27 @@ function pingArgs(ip: string, timeoutMs: number) {
   return ["-n", "-c", "1", "-W", String(Math.max(1, Math.ceil(timeoutMs / 1000))), ip];
 }
 
+/**
+ * Finds the round trip in one ping reply line without depending on the words around it.
+ * Windows localises the output ("time=12ms", "время=12мс", "Zeit=12ms") and some consoles
+ * mangle the letters, so the rule is: a number after "=" or "<" that is directly followed by
+ * a short unit token. "bytes=32", "TTL=57" and "icmp_seq=1" are followed by a space or a
+ * longer word and do not match.
+ */
+export function parsePingMs(out: string): number | null {
+  if (!/ttl[=\s]/i.test(out)) return null;
+  const match = out.match(/([=<])(\d+(?:[.,]\d+)?)(?![\d.,]) ?([^\s\d]\S{0,3})(?!\S)/);
+  if (!match) return null;
+  const value = Number(match[2].replace(",", "."));
+  if (!Number.isFinite(value)) return null;
+  // "time<1ms" means somewhere between 0 and 1, so report the middle.
+  return match[1] === "<" ? value / 2 : value;
+}
+
 /** Sends one echo request. Returns the round trip in ms, or null when nothing came back. */
 export async function ping(ip: string, timeoutMs = 900): Promise<number | null> {
   const out = await run("ping", pingArgs(ip, timeoutMs), timeoutMs + 1500);
-  if (!/ttl[=\s]/i.test(out)) return null;
-  const match = out.match(/(?:=|<)\s*([\d.]+)\s*ms/i);
-  if (!match) return null;
-  const value = Number(match[1]);
-  return out.includes(`<${match[1]}`) ? value / 2 : value;
+  return parsePingMs(out);
 }
 
 export type RouteLine = { n: number; ip: string | null };
@@ -43,7 +56,8 @@ export function traceRoute(
       ? ["tracert", ["-d", "-h", String(maxHops), "-w", "700", ip]]
       : ["traceroute", ["-n", "-q", "1", "-w", "1", "-m", String(maxHops), ip]];
 
-    const child = spawn(command, args as string[], { windowsHide: true });
+    // The command is one of two fixed names, so there is nothing for the bundler to trace.
+    const child = spawn(/* turbopackIgnore: true */ command, args as string[], { windowsHide: true });
     const stop = () => child.kill();
     signal.addEventListener("abort", stop, { once: true });
 
