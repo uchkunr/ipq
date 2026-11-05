@@ -2,7 +2,7 @@ import { lookup, resolve4, resolve6, resolveCname } from "node:dns/promises";
 import net from "node:net";
 import tls from "node:tls";
 import type { FlowStep, TraceEvent } from "@/lib/types";
-import { isIpv4 } from "./host";
+import { isIpv4 } from "@/lib/host";
 import { lookupOwner } from "./owners";
 import { ping, traceRoute } from "./tools";
 

@@ -1,4 +1,4 @@
-import { normalizeHost } from "@/lib/server/host";
+import { normalizeHost } from "@/lib/host";
 import { runTrace } from "@/lib/server/trace";
 import type { TraceEvent } from "@/lib/types";
 

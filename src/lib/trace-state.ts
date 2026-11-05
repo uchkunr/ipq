@@ -8,8 +8,6 @@ export type Hop = {
   sent: number;
   lost: number;
   avg: number | null;
-  last: number | null;
-  recent: (number | null)[];
 };
 
 export type TraceState = {
@@ -32,8 +30,6 @@ export const emptyTrace: TraceState = {
   error: null,
 };
 
-const RECENT = 48;
-
 export function reduceTrace(state: TraceState, event: TraceEvent): TraceState {
   switch (event.type) {
     case "start":
@@ -44,10 +40,7 @@ export function reduceTrace(state: TraceState, event: TraceEvent): TraceState {
       if (state.hops.some((h) => h.n === event.n)) return state;
       return {
         ...state,
-        hops: [
-          ...state.hops,
-          { n: event.n, ip: event.ip, owner: null, sent: 0, lost: 0, avg: null, last: null, recent: [] },
-        ].sort((a, b) => a.n - b.n),
+        hops: [...state.hops, { n: event.n, ip: event.ip, owner: null, sent: 0, lost: 0, avg: null }].sort((a, b) => a.n - b.n),
       };
     case "owner":
       return { ...state, hops: state.hops.map((h) => (h.ip === event.ip ? { ...h, owner: event.owner } : h)) };
@@ -57,16 +50,8 @@ export function reduceTrace(state: TraceState, event: TraceEvent): TraceState {
         hops: state.hops.map((h) => {
           if (h.n !== event.n) return h;
           const replied = h.sent - h.lost;
-          const avg =
-            event.rtt === null ? h.avg : ((h.avg ?? 0) * replied + event.rtt) / (replied + 1);
-          return {
-            ...h,
-            sent: h.sent + 1,
-            lost: h.lost + (event.rtt === null ? 1 : 0),
-            avg,
-            last: event.rtt,
-            recent: [...h.recent.slice(-(RECENT - 1)), event.rtt],
-          };
+          const avg = event.rtt === null ? h.avg : ((h.avg ?? 0) * replied + event.rtt) / (replied + 1);
+          return { ...h, sent: h.sent + 1, lost: h.lost + (event.rtt === null ? 1 : 0), avg };
         }),
       };
     case "route-done":
@@ -78,6 +63,16 @@ export function reduceTrace(state: TraceState, event: TraceEvent): TraceState {
   }
 }
 
+/** "Uzbektelekom Joint Stock Company" reads better as "Uzbektelekom" in a small box. */
+export function shortName(name: string) {
+  const short = name
+    .replace(/,?\s+(joint stock company|limited liability company|llc|ltd\.?|limited|inc\.?|corp\.?|corporation|gmbh|jsc|plc)$/i, "")
+    .trim();
+  return short || name;
+}
+
+export const MIN_TESTS = 15;
+
 export type Verdict = {
   tone: "good" | "warn" | "bad";
   title: string;
@@ -85,29 +80,27 @@ export type Verdict = {
   startsAt: number | null;
 };
 
-const MIN_PROBES = 15;
-
 function lossOf(hop: Hop) {
   return hop.sent ? (hop.lost / hop.sent) * 100 : 0;
 }
 
 function nameOf(hop: Hop) {
-  return hop.owner?.name ?? hop.ip ?? `hop ${hop.n}`;
+  return hop.owner ? shortName(hop.owner.name) : (hop.ip ?? `stop ${hop.n}`);
 }
 
-/** Reads the hop table the way a network engineer would, in plain words. */
+/** Reads the route the way a network engineer would, in plain words. */
 export function readVerdict(state: TraceState): Verdict | null {
-  const measured = state.hops.filter((h) => h.ip && h.sent >= MIN_PROBES);
+  const measured = state.hops.filter((h) => h.ip && h.sent >= MIN_TESTS);
   const destination = state.hops.at(-1);
-  if (!state.routeDone || !destination?.ip || destination.sent < MIN_PROBES) return null;
+  if (!state.routeDone || !destination?.ip || destination.sent < MIN_TESTS) return null;
 
   const end = lossOf(destination);
   const host = state.host ?? "the site";
   if (destination.lost === destination.sent) {
     return {
       tone: "warn",
-      title: `${host} does not reply to tests`,
-      detail: "Many servers ignore these tests on purpose. If the site opens normally, there is nothing to fix.",
+      title: `${host} does not respond to network tests`,
+      detail: "Many servers ignore these tests on purpose. If the site opens normally, no action is needed.",
       startsAt: null,
     };
   }
@@ -115,7 +108,7 @@ export function readVerdict(state: TraceState): Verdict | null {
     return {
       tone: "good",
       title: `Your connection to ${host} is healthy`,
-      detail: `${destination.sent} tests sent, ${destination.lost} lost, ${formatMs(destination.avg)} round trip.`,
+      detail: `${destination.sent} tests completed with ${destination.lost} lost and a ${formatMs(destination.avg)} average round trip.`,
       startsAt: null,
     };
   }
@@ -126,81 +119,74 @@ export function readVerdict(state: TraceState): Verdict | null {
   const local = start.owner?.kind === "private";
   return {
     tone: end >= 3 ? "bad" : "warn",
-    title: `${end.toFixed(1)}% of data to ${host} is getting lost`,
+    title: `${end.toFixed(1)}% packet loss on the way to ${host}`,
     detail: local
-      ? "The problem starts inside your home. Check your cable, Wi-Fi and router first."
-      : `The problem starts at ${nameOf(start)}. Your computer and router are fine, so this is not something you can fix at home. Contact your provider.`,
+      ? "The loss begins inside your home network. Check your cable, Wi-Fi and router first."
+      : `The loss begins at ${nameOf(start)}. Your computer and router are not the cause, so contact your internet provider.`,
     startsAt: start.n,
   };
 }
 
 export type BoxStatus = "waiting" | "good" | "problem" | "affected";
+export type BoxKind = "home" | "provider" | "network" | "site";
 
 export type Box = {
   key: string;
+  kind: BoxKind;
   title: string;
   role: string;
   hops: Hop[];
   delay: number | null;
-  added: number | null;
   sent: number;
   lost: number;
-  recent: (number | null)[];
   status: BoxStatus;
 };
 
-function makeBox(key: string, title: string, role: string): Box {
-  return { key, title, role, hops: [], delay: null, added: null, sent: 0, lost: 0, recent: [], status: "waiting" };
+function makeBox(key: string, kind: BoxKind, title: string, role: string): Box {
+  return { key, kind, title, role, hops: [], delay: null, sent: 0, lost: 0, status: "waiting" };
 }
 
 /** Folds routers into one box per network, so people read a path instead of a table. */
 export function buildBoxes(state: TraceState, verdict: Verdict | null): Box[] {
   const boxes: Box[] = [];
-  let providerSeen = false;
   const destination = state.hops.find((h) => h.ip !== null && h.ip === state.address);
+  let providerSeen = false;
 
   for (const hop of state.hops) {
     if (hop === destination) continue;
     const last = boxes.at(-1);
     if (hop.owner?.kind === "private") {
-      if (last?.key === "home") last.hops.push(hop);
-      else {
-        const box = makeBox("home", "Your router", "The box in your home");
-        box.hops.push(hop);
-        boxes.push(box);
-      }
+      if (last?.kind !== "home") boxes.push(makeBox("home", "home", "Your router", "Home network"));
+      boxes.at(-1)?.hops.push(hop);
       continue;
     }
     const known = hop.ip && hop.owner?.kind === "public" ? hop.owner.name : null;
     if (!known) {
-      if (last && last.key !== "home") last.hops.push(hop);
-      else {
-        const box = makeBox("pending", "Your internet provider", "Your first stop on the internet");
-        box.hops.push(hop);
-        boxes.push(box);
+      if (!last || last.kind === "home") {
+        boxes.push(makeBox("pending", "provider", "Your provider", "Internet provider"));
         providerSeen = true;
       }
+      boxes.at(-1)?.hops.push(hop);
       continue;
     }
     if (last?.key === "pending") {
       last.key = known;
-      last.title = known;
-      last.hops.push(hop);
-    } else if (last?.key === known) {
-      last.hops.push(hop);
-    } else {
-      const box = makeBox(known, known, providerSeen ? "A network on the way" : "Your internet provider");
-      box.hops.push(hop);
-      boxes.push(box);
+      last.title = shortName(known);
+    } else if (last?.key !== known) {
+      boxes.push(
+        providerSeen
+          ? makeBox(known, "network", shortName(known), "Transit network")
+          : makeBox(known, "provider", shortName(known), "Internet provider"),
+      );
       providerSeen = true;
     }
+    boxes.at(-1)?.hops.push(hop);
   }
 
-  const site = makeBox("site", state.host ?? "The site", destination?.owner?.name ?? "The site you asked for");
+  const site = makeBox("site", "site", state.host ?? "Destination", destination?.owner ? shortName(destination.owner.name) : "Destination");
   if (destination) site.hops.push(destination);
   boxes.push(site);
 
-  let before = 0;
   let troubled = false;
   for (const box of boxes) {
     const answering = box.hops.filter((h) => h.ip && h.sent > 0).at(-1);
@@ -208,12 +194,8 @@ export function buildBoxes(state: TraceState, verdict: Verdict | null): Box[] {
       box.delay = answering.avg;
       box.sent = answering.sent;
       box.lost = answering.lost;
-      box.recent = answering.recent;
-      box.added = answering.avg === null ? null : Math.max(0, answering.avg - before);
-      before = Math.max(before, answering.avg ?? 0);
     }
-    const starts = verdict?.startsAt !== null && box.hops.some((h) => h.n === verdict?.startsAt);
-    if (starts) {
+    if (verdict?.startsAt != null && box.hops.some((h) => h.n === verdict.startsAt)) {
       box.status = "problem";
       troubled = true;
     } else if (troubled) box.status = "affected";
