@@ -16,7 +16,7 @@ function localOwner(ip: string): Owner | null {
   return null;
 }
 
-function cleanHolder(holder: string) {
+export function cleanHolder(holder: string) {
   // RIPE holders look like "GOOGLE - Google LLC" or "RETN-AS RETN Limited".
   const named = holder.includes(" - ") ? holder.split(" - ").slice(1).join(" - ") : holder;
   const withoutHandle = named.replace(/^[A-Z0-9_-]{3,}\s+(?=\S)/, "");
@@ -28,8 +28,8 @@ async function fetchOwner(ip: string): Promise<Owner> {
   try {
     const signal = AbortSignal.timeout(8000);
     const [overview, geo] = await Promise.all([
-      fetch(`https://stat.ripe.net/data/prefix-overview/data.json?sourceapp=undertow&resource=${ip}`, { signal }).then((r) => r.json()),
-      fetch(`https://stat.ripe.net/data/rir-stats-country/data.json?sourceapp=undertow&resource=${ip}`, { signal })
+      fetch(`https://stat.ripe.net/data/prefix-overview/data.json?sourceapp=ipq&resource=${ip}`, { signal }).then((r) => r.json()),
+      fetch(`https://stat.ripe.net/data/rir-stats-country/data.json?sourceapp=ipq&resource=${ip}`, { signal })
         .then((r) => r.json())
         .catch(() => null),
     ]);

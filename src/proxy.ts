@@ -2,18 +2,32 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
-/**
- * Undertow reports what the machine it runs on can see, including which programs
- * are connected where. Only local visits are served unless the owner opts in.
- * Checking the Host header also blocks DNS rebinding from websites in the browser.
- */
-export function proxy(request: NextRequest) {
-  if (process.env.UNDERTOW_ALLOW_REMOTE === "1") return NextResponse.next();
-  if (LOCAL_HOST.test(request.headers.get("host") ?? "")) return NextResponse.next();
-  return new NextResponse(
-    "Undertow only answers on localhost. Set UNDERTOW_ALLOW_REMOTE=1 to change this.",
-    { status: 403 },
-  );
+/** Pages that double as plain-text endpoints for curl, wget and scripts. */
+const TEXT_PAGES: Record<string, string> = { "/ip": "/api/ip", "/headers": "/api/headers" };
+
+function wantsHtml(request: NextRequest) {
+  return (request.headers.get("accept") ?? "").includes("text/html");
 }
 
-export const config = { matcher: "/((?!_next/static|_next/image).*)" };
+export function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // `curl ipq.vercel.app/ip` gets the address back; a browser gets the page.
+  const api = TEXT_PAGES[pathname];
+  if (api && !wantsHtml(request)) {
+    const url = request.nextUrl.clone();
+    url.pathname = api;
+    return NextResponse.rewrite(url);
+  }
+
+  // The connection check reveals what the machine it runs on can see, so a self-hosted copy
+  // only serves it locally unless the owner opts in. Checking Host also blocks DNS rebinding.
+  if (pathname === "/api/trace" && process.env.IPQ_ALLOW_REMOTE !== "1" && process.env.VERCEL !== "1") {
+    if (!LOCAL_HOST.test(request.headers.get("host") ?? "")) {
+      return new NextResponse("The connection check only answers on localhost. Set IPQ_ALLOW_REMOTE=1 to change this.", { status: 403 });
+    }
+  }
+  return NextResponse.next();
+}
+
+export const config = { matcher: ["/ip", "/headers", "/api/trace"] };

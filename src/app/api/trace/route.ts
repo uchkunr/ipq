@@ -1,8 +1,12 @@
 import { normalizeHost } from "@/lib/host";
 import { runTrace } from "@/lib/server/trace";
+import { HOSTED } from "@/lib/site";
 import type { TraceEvent } from "@/lib/types";
 
 export async function GET(request: Request) {
+  if (HOSTED) {
+    return Response.json({ message: "The connection check runs on your own computer, not on the hosted site. See /check for how to run it." }, { status: 501 });
+  }
   const host = normalizeHost(new URL(request.url).searchParams.get("host") ?? "");
   if (!host) {
     return Response.json({ message: "Enter a site name like google.com or an IPv4 address." }, { status: 400 });

@@ -125,7 +125,7 @@ async function httpRequest(host: string, secure: boolean, signal: AbortSignal): 
       const response = await fetch(url, {
         redirect: "manual",
         signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]),
-        headers: { "user-agent": "Undertow network tracer" },
+        headers: { "user-agent": "ipq connection check" },
       });
       const ms = since(start);
       void response.body?.cancel().catch(() => undefined);
